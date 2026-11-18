@@ -4,8 +4,10 @@
     python bot.py --settings-from-env run the bot in a container (Railway)
     python bot.py --check-claude      check the Claude CLI setup, no Telegram
     python bot.py --try "text"        draft a reply to a made-up message, no Telegram
+    python bot.py --userbot-login     log in to your own account once (userbot mode)
+    python bot.py --userbot           run inside your own account, no Premium needed
 
-Exit codes: 0 ok, 1 Claude check failed, 2 configuration / Telegram token error.
+Exit codes: 0 ok, 1 Claude check failed, 2 configuration / Telegram token / login error.
 """
 from __future__ import annotations
 
@@ -51,7 +53,7 @@ def setup_logging() -> None:
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
-def settings_from_process_env(*, require_telegram: bool = True) -> Settings:
+def settings_from_process_env(*, require_telegram: bool = True, require_userbot: bool = False) -> Settings:
     """Container mode: read the settings from os.environ, then remove them from it.
 
     The variables are removed in ``finally`` (even on errors) so the ``claude``
@@ -59,16 +61,18 @@ def settings_from_process_env(*, require_telegram: bool = True) -> Settings:
     """
     try:
         source = {key: os.environ[key] for key in SETTING_KEYS if key in os.environ}
-        return load_settings(ENV_FILE, require_telegram=require_telegram, source=source)
+        return load_settings(
+            ENV_FILE, require_telegram=require_telegram, require_userbot=require_userbot, source=source
+        )
     finally:
         for key in SETTING_KEYS:
             os.environ.pop(key, None)
 
 
-def get_settings(from_env: bool, require_telegram: bool) -> Settings:
+def get_settings(from_env: bool, require_telegram: bool, require_userbot: bool = False) -> Settings:
     if from_env:
-        return settings_from_process_env(require_telegram=require_telegram)
-    settings = load_settings(ENV_FILE, require_telegram=require_telegram)
+        return settings_from_process_env(require_telegram=require_telegram, require_userbot=require_userbot)
+    settings = load_settings(ENV_FILE, require_telegram=require_telegram, require_userbot=require_userbot)
     warning = env_file_warning(ENV_FILE)
     if warning:
         log.warning(warning)
@@ -121,7 +125,11 @@ async def try_reply(settings: Settings, text: str) -> int:
 
     cli = make_claude_cli(settings)
     language = detect_language(text)
-    system_prompt = build_system_prompt(read_profile(settings.profile_path), datetime.now().astimezone())
+    system_prompt = build_system_prompt(
+        read_profile(settings.profile_path),
+        datetime.now().astimezone(),
+        persona="assistant" if settings.userbot_intro_text else "owner",
+    )
     user_prompt = build_user_prompt([{"role": "other", "name": "Friend", "text": text}], language)
     try:
         reply = await cli.generate(system_prompt, user_prompt)
@@ -181,12 +189,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check-claude", action="store_true", help="check the Claude CLI setup without Telegram")
     group.add_argument("--try", dest="try_text", metavar="TEXT", help="draft a reply to a made-up message without Telegram")
+    group.add_argument("--userbot", action="store_true", help="run inside your own Telegram account (no Premium needed)")
+    group.add_argument("--userbot-login", action="store_true", help="log in to your own account once and exit")
+    group.add_argument("--userbot-logout", action="store_true", help="log out of the userbot account and archive its data")
     args = parser.parse_args(argv)
 
     setup_logging()
     offline = args.check_claude or args.try_text is not None
+    userbot = args.userbot or args.userbot_login or args.userbot_logout
     try:
-        settings = get_settings(args.settings_from_env, require_telegram=not offline)
+        settings = get_settings(
+            args.settings_from_env,
+            require_telegram=not offline and not userbot,
+            require_userbot=userbot,
+        )
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
@@ -197,6 +213,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.try_text is not None:
         return asyncio.run(try_reply(settings, args.try_text))
     try:
+        if userbot:
+            try:
+                from assistant.userbot import logout_userbot, run_userbot
+            except ImportError as exc:  # telethon missing
+                print(f"Userbot mode needs Telethon: pip install -r requirements.txt ({exc})", file=sys.stderr)
+                return 2
+            if args.userbot_logout:
+                return asyncio.run(logout_userbot(settings))
+            return asyncio.run(run_userbot(settings, login_only=args.userbot_login))
         return asyncio.run(run_bot(settings))
     except KeyboardInterrupt:
         return 0

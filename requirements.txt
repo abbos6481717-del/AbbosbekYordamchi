@@ -1,2 +1,6 @@
 aiogram>=3.13,<4
 python-dotenv>=1.0
+telethon>=1.36,<2
+qrcode>=7,<9
+edge-tts>=7,<8
+soundfile>=0.12,<1

@@ -47,6 +47,91 @@ Anyone else who sends `/start` gets a short Uzbek note that this is a personal a
 should write to the owner directly. Claude is not called and nothing about the owner is revealed.
 All other messages from other people to the bot are silently ignored.
 
+## Userbot mode (no Telegram Premium)
+
+`python bot.py --userbot` runs the same assistant inside **your own account** (Telethon), so
+Telegram Business and Premium are not needed. It logs in with your phone number like a new
+device (*Settings → Devices* shows "Telegram agent (assistant)").
+
+**Risks — read first**
+
+- Telegram may restrict or ban accounts that send many automatic messages. Keep
+  `USERBOT_MAX_REPLIES_PER_HOUR` low and start in PREVIEW mode.
+- `data/userbot.session` is a **full key to your account** (all chats, contacts, sending).
+  Never commit, share or upload it. Run userbot mode **only on your own computer**, not on Railway.
+  If it leaks: *Settings → Devices → terminate* the "Telegram agent" session and delete the file.
+
+**Setup**
+
+1. https://my.telegram.org → log in → *API development tools* → create an app (any name).
+   Put `api_id` and `api_hash` into `.env` as `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`.
+   `TELEGRAM_BOT_TOKEN` and `OWNER_ID` are not needed in this mode.
+2. Log in once (you type the phone number, the code Telegram sends to your app, and the 2FA
+   password yourself): `.venv\Scripts\python bot.py --userbot-login`
+3. Run: `.venv\Scripts\python bot.py --userbot`
+
+**Behaviour** (on top of the table above)
+
+| Situation | What happens |
+|---|---|
+| Groups, channels, bots, deleted accounts, Telegram service (777000) | Ignored |
+| Someone not in your contacts | Ignored while `USERBOT_CONTACTS_ONLY=true` (default) |
+| You write in a chat from any device | Saved to history; bot stays quiet there for `OWNER_TAKEOVER_MINUTES` |
+| Before sending (auto-send) | Chat is marked read, "typing..." for 2–8 s, then pause/takeover/limits are checked again |
+| More than `USERBOT_MAX_REPLIES_PER_HOUR` replies (default 20) | Not sent, shown as preview |
+| Greeting ("Salom", "Assalomu alaykum, yaxshimisiz?", "Xayrli kun", "Привет", "Hello") and `USERBOT_GREETING_TEXT` set | Fixed greeting + `USERBOT_GREETING_FOLLOWUP` (e.g. menu link) at once, without Claude and without the reply delay, at most once per 12 h per chat. `USERBOT_GREETING_MODE=text/voice/both` (voice = Uzbek `USERBOT_VOICE`); `USERBOT_GREETING_SEND=true` sends it even in PREVIEW mode |
+| `USERBOT_INTRO_TEXT` set | The bot's first message in a chat (again after 12 h) starts with it, and Claude speaks as your assistant, about you in the third person |
+| Message from `USERBOT_FAST_CONTACTS` (names, @usernames or ids) | Answered at once, without the reply delay (Claude itself needs ~6–8 s) |
+| `USERBOT_REPLY_DELAY_SECONDS` > 0 (e.g. 120) | Waits that long first; if you answer meanwhile it stays quiet; several messages in a row get one reply |
+| Telegram FloodWait | No sending until it is over; a note goes to Saved Messages (auto-send mode) |
+
+| Message from `USERBOT_IGNORE_CONTACTS` (names, @usernames or ids) | Never answered, nothing stored |
+| `USERBOT_SCHEDULE_TO` + `USERBOT_SCHEDULE_TEXT` + `USERBOT_SCHEDULE_EVERY_MINUTES` | That text is sent to that chat every N minutes (not while paused); the last send time survives restarts (`data/schedule.json`) |
+
+| `DAILY_REPORT_TIME` (+ `DAILY_REPORT_GROUP`, `CRM_*`) | Every day at that time a voice note (soft female voice) goes to Saved Messages as a reminder: today's lunch / evening hall bookings from the CRM and yesterday's sales, guests and average check read by Claude from the newest report photo in the group. It goes out only complete: if yesterday's table is not posted yet or the CRM does not answer, it waits and sends as soon as everything is there, however late (optional `DAILY_REPORT_WAIT_UNTIL`: send with what it has from that time). A complete `/hisobot` counts as the day's report. Sent once a day (`data/daily_report.json`); guest names and phones never go to Claude |
+
+Owner commands are typed in **Saved Messages**: `/pause`, `/resume`, `/status`, `/hisobot` (morning report now), `/help`.
+
+**Running in the background (Windows):** double-click `start-userbot.cmd` (restarts it if it already
+runs) and `stop-userbot.cmd`. No console window is used, so it cannot be frozen by a click in the
+window (Windows QuickEdit) or closed by accident. A hidden loop (`scripts/run-userbot-loop.ps1`)
+restarts the bot 30 s after it stops (lost internet, crash), except on exit code 2 (settings / login
+problem). No internet at start is exit code 1, so it keeps retrying until the connection is back.
+Output: `data/userbot.log`, `data/userbot-console.log`, `data/userbot-supervisor.log`.
+
+**Start with Windows:** `scripts/install-autostart.ps1` puts a shortcut "Telegram yordamchi bot" in
+the Startup folder (`shell:startup`); it runs `scripts/start-userbot.ps1 -AtLogon` after you log in
+(it waits 30 s for the internet). `scripts/install-autostart.ps1 -Remove` turns it off.
+
+Do not run the Business bot and the userbot for the same account at the same time, and never run
+the userbot on two computers at once: both would answer and send the report twice.
+
+### Yangi kompyuterga ko'chirish (Windows)
+
+GitHub'da faqat kod bor. `.env` (tokenlar, CRM paroli, barcha sozlamalar) va `data/` (Telegram
+sessiyasi = akkauntga to'liq kirish, yozishmalar tarixi) GitHub'ga **chiqmaydi**.
+
+1. **Eski kompyuterda:** `stop-userbot.cmd` ni bosing, keyin
+   `powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Remove`.
+   `.env` faylini fleshkaga nusxalang (Telegram yoki pochta orqali yubormang).
+2. **Yangi kompyuterda** o'rnating: [Git](https://git-scm.com/download/win),
+   [Python 3.12](https://www.python.org/downloads/) ("Add python.exe to PATH" belgisi bilan) va
+   Claude Code (PowerShell'da: `irm https://claude.ai/install.ps1 | iex`).
+3. Kodni yuklab oling va o'rnating:
+   ```powershell
+   cd $HOME\Desktop
+   git clone https://github.com/abbos6481717-del/AbbosbekYordamchi.git "Telegram agent"
+   cd "Telegram agent"
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-new-pc.ps1
+   ```
+4. `.env` faylini fleshkadan shu papkaga (`Telegram agent`) nusxalang. Unda Claude tokeni ham bor,
+   shuning uchun `claude setup-token` qayta kerak emas.
+5. Telegram'ga kiring: `.venv\Scripts\python.exe bot.py --userbot-login` — QR kod chiqadi, telefonda
+   Telegram → Settings → Devices → Link Desktop Device bilan skanerlang.
+6. Botni yoqing: `start-userbot.cmd`. Kompyuter yonganda o'zi yonishi uchun:
+   `powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1`.
+7. Tekshirish: Telegram → Saqlangan xabarlar → `/status`.
+
 ## How Claude is called
 
 One `claude -p` run per reply, started with `asyncio.create_subprocess_exec` (never a shell):
@@ -137,6 +222,8 @@ an npm `claude.cmd` shim is refused because it would run through `cmd.exe`.
 | `python bot.py --settings-from-env` | Container mode (Railway): settings from environment variables, removed from the process environment right after reading | same |
 | `python bot.py --check-claude` | Check the Claude CLI setup, no Telegram | 0 ok, 1 check failed, 2 config error |
 | `python bot.py --try "text"` | Draft a reply to a made-up message, no Telegram | 0 ok, 1 Claude error, 2 config error |
+| `python bot.py --userbot-login` | Log in to your own account once (userbot mode) | 0 ok, 2 config / login error |
+| `python bot.py --userbot` | Run inside your own account, no Premium needed | 0, 2 = config / login error |
 
 `--check-claude` and `--try` do not need the Telegram settings and also work with `--settings-from-env`.
 
@@ -161,6 +248,7 @@ tests need POSIX and are skipped on Windows).
 | `assistant/store.py` | History, seen messages, runtime state (JSON files in `data/`) |
 | `assistant/service.py` | Core logic, owner controls |
 | `assistant/handlers.py` | aiogram router |
+| `assistant/userbot.py` | Userbot mode (Telethon): own account, no Premium |
 | `profile.md` | Your profile (Uzbek template) |
 | `.env.example` | Local settings template |
 | `Dockerfile`, `railway.json`, `.dockerignore` | Railway deployment |

@@ -46,6 +46,11 @@ class Outcome(str, Enum):
     limited = "limited"
     skipped = "skipped"
     permission_denied = "permission_denied"
+    not_contact = "not_contact"
+    rate_limited = "rate_limited"
+    superseded = "superseded"
+    ignored_contact = "ignored_contact"
+    owner_command = "owner_command"
     error = "error"
 
 
@@ -490,12 +495,13 @@ class Assistant:
         return "\n".join(lines)
 
 
-def make_claude_cli(settings: Settings) -> ClaudeCLI:
+def make_claude_cli(settings: Settings, *, effort: Optional[str] = None) -> ClaudeCLI:
+    """``effort`` overrides CLAUDE_EFFORT (the morning report thinks harder than chat replies)."""
     return ClaudeCLI(
         settings.claude_bin,
         workdir=settings.claude_workdir,
         model=settings.claude_model,
-        effort=settings.claude_effort,
+        effort=effort or settings.claude_effort,
         timeout=settings.claude_timeout,
         oauth_token=settings.claude_oauth_token,
         auth_label=settings.claude_auth_mode,

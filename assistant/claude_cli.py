@@ -15,6 +15,7 @@ Every reply is one ``claude -p`` run:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -49,6 +50,8 @@ ISOLATION_ENV = {
 
 REMOVED_ENV_KEYS = (
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_API_HASH",
+    "CRM_PASSWORD",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
@@ -222,7 +225,9 @@ class ClaudeCLI:
             return self._auth_label
         return "subscription token" if self._oauth_token else "this machine's claude login"
 
-    def build_command(self, system_prompt_file: str, output_format: str = "json") -> List[str]:
+    def build_command(
+        self, system_prompt_file: str, output_format: str = "json", input_format: Optional[str] = None
+    ) -> List[str]:
         cmd = [
             self.claude_bin,
             "-p",
@@ -237,6 +242,8 @@ class ClaudeCLI:
             "--output-format", output_format,
             "--effort", self.effort,
         ]
+        if input_format:
+            cmd.extend(["--input-format", input_format])
         if output_format == "stream-json":
             cmd.append("--verbose")
         if self.model:
@@ -262,7 +269,15 @@ class ClaudeCLI:
             )
         return found
 
-    async def _run(self, system_prompt: str, stdin_text: str, output_format: str) -> Tuple[int, str, str]:
+    async def _run(
+        self,
+        system_prompt: str,
+        stdin_text: str,
+        output_format: str,
+        input_format: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Tuple[int, str, str]:
+        timeout = timeout or self.timeout
         claude_bin = self._resolve_bin()
         self.workdir.mkdir(parents=True, exist_ok=True)
         if not IS_WINDOWS:
@@ -278,7 +293,7 @@ class ClaudeCLI:
             # An empty private directory as cwd for each run.
             run_dir = tempfile.mkdtemp(prefix="run-", dir=str(self.workdir))
 
-            cmd = self.build_command(prompt_path, output_format)
+            cmd = self.build_command(prompt_path, output_format, input_format)
             cmd[0] = claude_bin
             kwargs: Dict[str, Any] = {}
             if not IS_WINDOWS:
@@ -300,12 +315,12 @@ class ClaudeCLI:
 
             try:
                 out, err = await asyncio.wait_for(
-                    proc.communicate(stdin_text.encode("utf-8")), timeout=self.timeout
+                    proc.communicate(stdin_text.encode("utf-8")), timeout=timeout
                 )
             except asyncio.TimeoutError:
                 _kill_process_tree(proc)
                 await proc.wait()
-                raise ClaudeTimeout(f"Claude CLI did not answer within {self.timeout} seconds") from None
+                raise ClaudeTimeout(f"Claude CLI did not answer within {timeout} seconds") from None
             except asyncio.CancelledError:
                 _kill_process_tree(proc)
                 raise
@@ -334,6 +349,36 @@ class ClaudeCLI:
 
     async def generate(self, system_prompt: str, user_prompt: str) -> str:
         returncode, stdout, stderr = await self._run(system_prompt, user_prompt, "json")
+        try:
+            return parse_result(returncode, stdout, stderr)
+        except ClaudeError as exc:
+            raise self._wrap_auth(exc) from None
+
+    async def generate_with_images(
+        self,
+        system_prompt: str,
+        text: str,
+        images: Sequence[Tuple[bytes, str]],
+        *,
+        timeout: Optional[float] = None,
+    ) -> str:
+        """Like ``generate`` but the user message also carries images ((data, media type) pairs).
+
+        Tools stay disabled: the images go in as content blocks through ``--input-format
+        stream-json``, so Claude only looks at them and writes text back.
+        """
+        content: List[Dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode("ascii")},
+            }
+            for data, media_type in images
+        ]
+        content.append({"type": "text", "text": text})
+        line = json.dumps({"type": "user", "message": {"role": "user", "content": content}})
+        returncode, stdout, stderr = await self._run(
+            system_prompt, line + "\n", "stream-json", input_format="stream-json", timeout=timeout
+        )
         try:
             return parse_result(returncode, stdout, stderr)
         except ClaudeError as exc:
